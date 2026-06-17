@@ -162,6 +162,7 @@ button.green{background:#16a34a}button.green:hover{background:#15803d}
 .codechip:hover{background:#fde8a8}
 #gchatBar{border-top:1px solid #eef0f4}
 #zoomhint{position:absolute;left:50%;top:56%;transform:translateX(-50%);font-size:12px;color:#ffd166;background:rgba(0,0,0,.35);padding:3px 10px;border-radius:6px;display:none;text-shadow:0 1px 3px #000}
+#zoomlvl{position:absolute;right:26px;top:50%;transform:translateY(-50%);font-size:22px;font-weight:800;color:#ffd166;text-shadow:0 1px 4px #000;pointer-events:none}
 </style>
 <style id="ui4">
 /* ===== 홈 리디자인 (타이포/레이아웃) ===== */
@@ -298,7 +299,8 @@ h1{letter-spacing:-0.5px}
   <div id="board"></div>
   <div id="dmgnums"></div>
   <div id="killmsg">처치</div>
-  <div id="zoomhint">스나이퍼는 우클릭 줌 상태에서 정확합니다</div>
+  <div id="zoomhint">우클릭: 줌 2x → 4x → 해제</div>
+  <div id="zoomlvl"></div>
   <div id="nadeChargeWrap"><div id="nadeChargeFill"></div></div>
   <div id="igmsgs"></div>
   <div id="igchatWrap"><input type="text" id="igchatIn" maxlength="80" placeholder="메시지 입력 후 Enter (Esc 취소)"></div>
@@ -343,6 +345,14 @@ let killGoal = 30;             // 목표 킬수 (로비에서 30/50/100 선택)
 const TEAM_SIZE = 8;           // 팀당 8명, 최대 16명 (빈 자리는 AI)
 const SNAP_MS = 66;            // 상태 전송 주기(15Hz)
 const PREFIX = 'wh4v4-';       // PeerJS id 접두사
+// P2P 연결 보강: STUN + 무료 TURN(Open Relay) — 회사 방화벽/대칭 NAT 뒤에서도 연결 성공률↑
+const ICE = { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+] };
 
 const WEAPONS = {
   rifle:  { name:'라이플',   dmg:17, interval:0.1,  mag:30, reserve:120, auto:true,  spread:0.008, hipSpread:0.008, zoom:null, reload:1.8, recoil:0.0045 },
@@ -372,7 +382,7 @@ const me = {
   id: null, name: '플레이어', team: 'blue',
   pos: new THREE.Vector3(), vy: 0, onGround: true,
   yaw: 0, pitch: 0, hp: 100, alive: true,
-  weapon: 'rifle', zoomed: false,
+  weapon: 'rifle', zoomed: false, zoom: 0,
   ammo: { rifle: { mag: 30, reserve: 120 }, sniper: { mag: 5, reserve: 25 }, knife: { mag: 1, reserve: 0 } },
   nades: 2,
   lastFire: 0, reloading: false, reloadEnd: 0
@@ -428,7 +438,7 @@ function sendToHost(obj) {
 function startHost() {
   const code = genCode();
   net.mode = 'host';
-  net.peer = new Peer(PREFIX + code);
+  net.peer = new Peer(PREFIX + code, { config: ICE });
   net.peer.on('open', id => {
     me.id = id;
     net.roomCode = code;
@@ -458,7 +468,7 @@ function startHost() {
 
 function startJoin(code) {
   net.mode = 'client';
-  net.peer = new Peer();
+  net.peer = new Peer(undefined, { config: ICE });
   net.peer.on('open', id => {
     me.id = id;
     const conn = net.peer.connect(PREFIX + code, { reliable: true });
@@ -806,16 +816,34 @@ function addRock(x, z, sc) {
   scene.add(m); world.meshes.push(m);
   world.colliders.push({ minX: x - sc * 0.8, maxX: x + sc * 0.8, minY: 0, maxY: sc * 1.05, minZ: z - sc * 0.8, maxZ: z + sc * 0.8 });
 }
+function addWall(x, z, sx, h, sz, tex, win) {
+  // win={len:'x'|'z', cw, ch, sill} 창문 구멍. 없으면 통벽.
+  if (!win) { addBox(x, 0, z, sx, h, sz, tex); return; }
+  const top = win.sill + win.ch;
+  addBox(x, 0, z, sx, win.sill, sz, tex);          // 창 아래
+  addBox(x, top, z, sx, h - top, sz, tex);          // 창 위
+  if (win.len === 'x') {
+    const side = (sx - win.cw) / 2;
+    addBox(x - (win.cw + side) / 2, win.sill, z, side, win.ch, sz, tex);
+    addBox(x + (win.cw + side) / 2, win.sill, z, side, win.ch, sz, tex);
+  } else {
+    const side = (sz - win.cw) / 2;
+    addBox(x, win.sill, z - (win.cw + side) / 2, sx, win.ch, side, tex);
+    addBox(x, win.sill, z + (win.cw + side) / 2, sx, win.ch, side, tex);
+  }
+}
 function addBuilding(x, z, w, d, h) {
   const t = 0.4;
-  addBox(x, 0, z - d / 2, w, h, t, TEX.brick);                       // 뒷벽
-  addBox(x - w / 2, 0, z, t, h, d, TEX.brick);                       // 좌벽
-  addBox(x + w / 2, 0, z, t, h, d, TEX.brick);                       // 우벽
-  const doorW = 1.8, seg = (w - doorW) / 2;                          // 앞벽(문 구멍)
+  const wB = { len: 'x', cw: 1.4, ch: 0.9, sill: 1.0 };   // 가로벽 창
+  const wS = { len: 'z', cw: 1.4, ch: 0.9, sill: 1.0 };   // 세로벽 창
+  addWall(x, z - d / 2, w, h, t, TEX.brick, wB);          // 뒷벽(작은 창)
+  addWall(x - w / 2, z, t, h, d, TEX.brick, wS);          // 좌벽(작은 창)
+  addWall(x + w / 2, z, t, h, d, TEX.brick, wS);          // 우벽(작은 창)
+  const doorW = 1.8, seg = (w - doorW) / 2;               // 앞벽(문 구멍)
   addBox(x - (doorW / 2 + seg / 2), 0, z + d / 2, seg, h, t, TEX.brick);
   addBox(x + (doorW / 2 + seg / 2), 0, z + d / 2, seg, h, t, TEX.brick);
-  addBox(x, h - 0.6, z + d / 2, doorW, 0.6, t, TEX.brick);           // 문 상단 인방
-  addBox(x, h, z, w, 0.4, d, TEX.metal);                            // 옥상(올라가서 사격 가능)
+  addBox(x, h - 0.6, z + d / 2, doorW, 0.6, t, TEX.brick);
+  addBox(x, h, z, w, 0.4, d, TEX.metal);                  // 옥상
 }
 
 function buildField() {
@@ -957,10 +985,10 @@ function makeCharacter(id) {
   head.userData = { eid: id, part: 'head' }; helmet.userData = { eid: id, part: 'head' };
 
   const hitBox = new THREE.Mesh(
-    new THREE.BoxGeometry(0.95, 2.1, 0.95),
+    new THREE.BoxGeometry(1.05, 2.2, 1.05),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
   );
-  hitBox.position.y = 1.05;
+  hitBox.position.y = 1.1;
   hitBox.userData = { eid: id, part: 'body' };
 
   g.add(legL, legR, bootL, bootR, torso, vest, belt, armL, armR, neck, head, helmet, visor, gun, hitBox);
@@ -978,35 +1006,30 @@ function makeCharacter(id) {
 }
 
 function makeNameTag(ent) {
-  if (ent.nameObj) { ent.group.remove(ent.nameObj); }
+  if (ent.nameObj) { ent.group.remove(ent.nameObj); ent.nameObj = null; }
   const r = roster[ent.id];
-  const ally = r.team === me.team;
+  ent.hpFg = null;
+  if (r.team !== me.team) return; // 적은 이름표/체력바 일절 표시 안 함 (은엄폐 전략)
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const c = cv.getContext('2d');
   c.font = 'bold 30px sans-serif'; c.textAlign = 'center';
-  c.fillStyle = ally ? '#58a6ff' : '#ff5a5a';
+  c.fillStyle = '#58a6ff';
   c.strokeStyle = 'rgba(0,0,0,.8)'; c.lineWidth = 6;
   c.strokeText(r.name, 128, 40); c.fillText(r.name, 128, 40);
   const tx = new THREE.CanvasTexture(cv);
-  // 아군 이름표는 벽 너머로도 보이고, 적 이름표는 벽에 가려짐
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx, depthTest: !ally }));
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx, depthTest: false })); // 아군은 벽 너머로도
   sp.scale.set(2.2, 0.55, 1); sp.position.y = 2.45;
-
   const holder = new THREE.Group(); holder.add(sp);
-  let fg = null;
-  if (ally) {
-    // 체력바는 아군만 표시 (적의 남은 피는 보이지 않음)
-    const bgCv = document.createElement('canvas'); bgCv.width = 64; bgCv.height = 8;
-    const bc = bgCv.getContext('2d'); bc.fillStyle = '#181d28'; bc.fillRect(0, 0, 64, 8);
-    const bg = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(bgCv), depthTest: false }));
-    bg.scale.set(1.3, 0.13, 1); bg.position.y = 2.12;
-    const fgCv = document.createElement('canvas'); fgCv.width = 64; fgCv.height = 8;
-    const fc = fgCv.getContext('2d'); fc.fillStyle = '#34d275'; fc.fillRect(0, 0, 64, 8);
-    fg = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(fgCv), depthTest: false }));
-    fg.center.set(0, 0.5);
-    fg.scale.set(1.3, 0.1, 1); fg.position.set(-0.65, 2.12, 0);
-    holder.add(bg, fg);
-  }
+  const bgCv = document.createElement('canvas'); bgCv.width = 64; bgCv.height = 8;
+  const bc = bgCv.getContext('2d'); bc.fillStyle = '#181d28'; bc.fillRect(0, 0, 64, 8);
+  const bg = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(bgCv), depthTest: false }));
+  bg.scale.set(1.3, 0.13, 1); bg.position.y = 2.12;
+  const fgCv = document.createElement('canvas'); fgCv.width = 64; fgCv.height = 8;
+  const fc = fgCv.getContext('2d'); fc.fillStyle = '#34d275'; fc.fillRect(0, 0, 64, 8);
+  const fg = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(fgCv), depthTest: false }));
+  fg.center.set(0, 0.5);
+  fg.scale.set(1.3, 0.1, 1); fg.position.set(-0.65, 2.12, 0);
+  holder.add(bg, fg);
   ent.group.add(holder);
   ent.nameObj = holder; ent.hpFg = fg;
 }
@@ -1254,6 +1277,25 @@ function updateMedkits(dt) {
 
 // ---------- 사격 ----------
 const _ray = new THREE.Raycaster();
+function sniperAssist(origin, dir) {
+  // 스나이퍼 관용 조준: 멀어도(최대 1km) 적 쪽으로 쏘면 명중. 멀티 지연/미세오차 보정.
+  // 적 중심에서 약 2.3°(거리비례 최소 1.8m) 안이면 명중. 단 사이에 벽이 있으면 무효.
+  let best = null, bestProj = Infinity;
+  for (const id in ents) {
+    if (!ents[id].alive || !roster[id] || roster[id].team === me.team) continue;
+    const c = ents[id].group.position.clone(); c.y += 1.1;
+    const to = c.clone().sub(origin);
+    const proj = to.dot(dir);
+    if (proj <= 0 || proj > 1000) continue;
+    const closest = origin.clone().add(dir.clone().multiplyScalar(proj));
+    const tol = Math.max(1.8, proj * 0.04);   // 가까이 1.8m, 멀수록 넓게
+    if (closest.distanceTo(c) > tol) continue;
+    _ray.set(origin, dir); _ray.far = proj - 0.3;
+    if (_ray.intersectObjects(world.meshes, false).length > 0) continue; // 벽 가림
+    if (proj < bestProj) { best = id; bestProj = proj; }
+  }
+  return best;
+}
 function tryFire() {
   if (!me.alive || me.reloading || gameState !== 'PLAY' || !pointerLocked) return;
   const w = WEAPONS[me.weapon];
@@ -1266,18 +1308,17 @@ function tryFire() {
   if (!w.melee) am.mag--;
   playSfx(w.melee ? 'swish' : me.weapon === 'sniper' ? 'sniper' : 'rifle');
 
-  // 반동 (누적분은 시간이 지나면 자동 회복 — updateLocal에서 처리)
-  me.pitch = clamp(me.pitch + w.recoil, -1.55, 1.55);
-  me.recoilAcc = (me.recoilAcc || 0) + w.recoil;
-
-  // 탄퍼짐
+  // 탄퍼짐 — 반동은 "이 발의 방향을 정한 뒤" 적용한다.
+  // (현재 탄은 조준한 곳으로 정확히 나가고, 반동은 화면만 들어올려 다음 발에 영향)
   const spread = (me.weapon === 'sniper' && !me.zoomed) ? w.hipSpread : w.spread;
   const dir = new THREE.Vector3(0, 0, -1)
     .applyEuler(new THREE.Euler(me.pitch + rand(-spread, spread), me.yaw + rand(-spread, spread), 0, 'YXZ'));
+  me.pitch = clamp(me.pitch + w.recoil, -1.55, 1.55);
+  me.recoilAcc = (me.recoilAcc || 0) + w.recoil;
   const origin = new THREE.Vector3().copy(camera.position);
 
   scene.updateMatrixWorld(); // 발사 시점 좌표 최신화 (리스폰 직후 등 안전)
-  _ray.set(origin, dir); _ray.far = w.melee ? w.range : 200;
+  _ray.set(origin, dir); _ray.far = w.melee ? w.range : (me.weapon === 'sniper' ? 1000 : 200);
   const targets = [...world.meshes];
   for (const id in ents) if (ents[id].alive) targets.push(...ents[id].hitMeshes);
   const hits = _ray.intersectObjects(targets, false);
@@ -1296,6 +1337,11 @@ function tryFire() {
         if (u2 && u2.eid === victim && u2.part === 'head') { part = 'head'; break; }
       }
     }
+  }
+  // 줌 스나이퍼 관용 조준(지연/미세 오차 보정)
+  if (!victim && me.weapon === 'sniper') {
+    const av = sniperAssist(origin, dir);
+    if (av) { victim = av; part = 'body'; const cc = ents[av].group.position.clone(); cc.y += 1.1; end = cc; }
   }
 
   if (!w.melee) {
@@ -1352,17 +1398,25 @@ function switchWeapon(wk) {
   if (wk === 'grenade' && me.nades <= 0) { toast('수류탄이 없습니다'); return; }
   if (nadeChargeT >= 0) { nadeChargeT = -1; $('nadeChargeWrap').style.display = 'none'; }
   me.weapon = wk; me.reloading = false; $('reloadTxt').style.display = 'none';
-  setZoom(false); updateViewModel(); updateHud();
+  resetZoom(); updateViewModel(); updateHud();
 }
-function setZoom(z) {
-  if (z && (me.weapon !== 'sniper' || !me.alive)) return;
-  me.zoomed = z;
-  camera.fov = z ? WEAPONS.sniper.zoom : 75;
+const ZOOM_FOV = [75, 40, 19], ZOOM_SENS = [1, 0.55, 0.3];
+function applyZoom() {
+  if (!camera) return;
+  me.zoomed = me.zoom > 0;
+  camera.fov = me.zoom > 0 ? ZOOM_FOV[me.zoom] : 75;
   camera.updateProjectionMatrix();
-  $('scope').style.display = z ? 'block' : 'none';
-  $('xhair').style.display = z ? 'none' : 'block';
+  $('scope').style.display = me.zoom > 0 ? 'block' : 'none';
+  $('xhair').style.display = me.zoom > 0 ? 'none' : 'block';
+  $('zoomlvl').textContent = me.zoom > 0 ? (me.zoom === 1 ? '2x' : '4x') : '';
   updateViewModel();
 }
+function cycleZoom() {
+  if (me.weapon !== 'sniper' || !me.alive) return;
+  me.zoom = (me.zoom + 1) % 3;   // 0 -> 2x -> 4x -> 0
+  applyZoom(); playSfx('swish');
+}
+function resetZoom() { me.zoom = 0; applyZoom(); }
 function showHitmark(head) {
   const h = $('hitmark');
   h.classList.toggle('head', !!head);
@@ -1449,7 +1503,7 @@ function onKill(d) {
   if (d.v === me.id) {
     me.alive = false; me.hp = 0;
     nadeChargeT = -1; $('nadeChargeWrap').style.display = 'none';
-    setZoom(false); updateViewModel();
+    resetZoom(); updateViewModel();
     const ov = $('respawnOv'); ov.style.display = 'flex';
     let n = 3; $('respawnCnt').textContent = n + '초 후 부활';
     clearInterval(ov._iv);
@@ -1892,7 +1946,7 @@ document.addEventListener('mousedown', e => {
       if (me.nades > 0 && nadeChargeT < 0) { nadeChargeT = clock.elapsedTime; $('nadeChargeWrap').style.display = 'block'; }
     } else { mouseDown = true; tryFire(); }
   }
-  if (e.button === 2) { rmbDown = true; if (me.weapon === 'sniper') setZoom(true); }
+  if (e.button === 2) { if (me.weapon === 'sniper') cycleZoom(); }
 });
 document.addEventListener('mouseup', e => {
   if (e.button === 0) {
@@ -1903,7 +1957,7 @@ document.addEventListener('mouseup', e => {
       throwNade(11 + (hold / 1.3) * 17); // 살짝: 가까이 / 꾹: 멀리 강하게
     }
   }
-  if (e.button === 2) { rmbDown = false; setZoom(false); }
+  if (e.button === 2) { rmbDown = false; }
 });
 document.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('pointerlockchange', () => {
@@ -1913,7 +1967,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.addEventListener('mousemove', e => {
   if (!pointerLocked || gameState !== 'PLAY') return;
-  const sens = 0.0023 * (me.zoomed ? 0.35 : 1);
+  const sens = 0.0023 * (ZOOM_SENS[me.zoom] || 1);
   me.yaw -= e.movementX * sens;
   me.pitch = clamp(me.pitch - e.movementY * sens, -1.55, 1.55);
 });
@@ -1948,7 +2002,7 @@ const gchat = { peer: null, relay: false, conns: {}, conn: null, hist: [], retri
 function gchatInit() {
   if (gchat.peer) { try { gchat.peer.destroy(); } catch (e) { } }
   gchat.relay = false; gchat.conns = {}; gchat.conn = null;
-  const p = new Peer(GLOBAL_ID);
+  const p = new Peer(GLOBAL_ID, { config: ICE });
   gchat.peer = p;
   p.on('open', () => {
     gchat.relay = true; gchat.retries = 0;
@@ -1971,7 +2025,7 @@ function gchatInit() {
   });
 }
 function gchatJoin() {
-  const p = new Peer();
+  const p = new Peer(undefined, { config: ICE });
   gchat.peer = p; gchat.relay = false;
   p.on('open', () => {
     const c = p.connect(GLOBAL_ID, { reliable: true });
@@ -2138,6 +2192,7 @@ animate();
   const intro = document.getElementById('intro');
   if (!intro) return;
   const iv = document.getElementById('introVid');
+  const tap = document.getElementById('introTap');
   let done = false;
   function endIntro() {
     if (done) return; done = true;
@@ -2146,20 +2201,25 @@ animate();
     setTimeout(() => { if (intro.parentNode) intro.parentNode.removeChild(intro); }, 650);
   }
   document.getElementById('introSkip').addEventListener('click', endIntro);
-  iv.addEventListener('ended', endIntro);
-  iv.addEventListener('error', endIntro); // 영상이 없거나 오류면 곧장 메뉴로
+  iv.addEventListener('ended', endIntro);   // 끝까지 본 경우에만 자동 종료(중간 컷 없음)
+  iv.addEventListener('error', endIntro);    // 영상이 없거나 오류면 곧장 메뉴로
+  // 1) 소리 포함 자동재생 시도
   iv.muted = false;
-  const tryPlay = iv.play();
-  if (tryPlay && tryPlay.catch) tryPlay.catch(() => {
+  const p = iv.play();
+  if (p && p.catch) p.catch(() => {
+    // 2) 브라우저가 소리 자동재생을 막으면 음소거로 처음부터 재생(끝까지) + 첫 클릭에 소리 ON
     iv.muted = true; iv.play().catch(() => { });
-    document.getElementById('introTap').style.display = 'block';
+    if (tap) tap.style.display = 'block';
   });
-  intro.addEventListener('click', (e) => {
-    if (e.target.id === 'introSkip') return;
-    if (iv.muted) { iv.muted = false; iv.currentTime = 0; iv.play().catch(() => { }); }
-    document.getElementById('introTap').style.display = 'none';
-  });
-  setTimeout(endIntro, 14000); // 안전장치
+  // 첫 사용자 동작에 소리만 켠다(재시작 안 함 → 중간에 끊기지 않음)
+  function unmuteOnce() {
+    if (iv.muted) { iv.muted = false; iv.play().catch(() => { }); }
+    if (tap) tap.style.display = 'none';
+    window.removeEventListener('pointerdown', unmuteOnce, true);
+    window.removeEventListener('keydown', unmuteOnce, true);
+  }
+  window.addEventListener('pointerdown', unmuteOnce, true);
+  window.addEventListener('keydown', unmuteOnce, true);
 })();
 </script>
 </body>
