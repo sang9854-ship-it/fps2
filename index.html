@@ -200,17 +200,25 @@ h1{letter-spacing:-0.5px}
 <style id="introCss">
 #intro{position:fixed;inset:0;z-index:200;background:#000;display:flex;align-items:center;justify-content:center;transition:opacity .6s}
 #introVid{max-width:100%;max-height:100%;width:auto;height:auto;background:#000}
-#introSkip{position:absolute;top:18px;right:18px;width:auto;margin:0;padding:8px 16px;font-size:13px;font-weight:700;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;cursor:pointer}
+#introSkip{position:absolute;top:18px;right:18px;width:auto;margin:0;padding:8px 16px;font-size:13px;font-weight:700;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;cursor:pointer;z-index:2}
 #introSkip:hover{background:rgba(255,255,255,.26)}
-#introTap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);color:#fff;font-size:15px;font-weight:600;background:rgba(0,0,0,.5);padding:10px 20px;border-radius:30px;display:none;animation:tapPulse 1.4s infinite}
-@keyframes tapPulse{0%,100%{opacity:.55}50%{opacity:1}}
+#introGate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(circle at 50% 38%,#16203a,#070a11);cursor:pointer}
+#introTitle{font-size:34px;font-weight:800;letter-spacing:4px;color:#cfe0ff;text-shadow:0 2px 20px rgba(80,140,255,.4)}
+#introStart{width:auto;margin:0;padding:14px 42px;font-size:20px;font-weight:800;background:#2563eb;border:none;border-radius:12px;color:#fff;cursor:pointer;box-shadow:0 8px 30px rgba(37,99,235,.5);animation:startPulse 1.6s infinite}
+#introStart:hover{background:#3b76f5}
+#introSub{font-size:13px;color:#8a93a6}
+@keyframes startPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
 </style>
 </head>
 <body>
 <!-- 인트로 영상 (첫 로딩 시 재생) -->
 <div id="intro">
   <video id="introVid" src="intro.mp4" playsinline preload="auto"></video>
-  <div id="introTap">화면을 탭하면 소리와 함께 재생됩니다</div>
+  <div id="introGate">
+    <div id="introTitle">WAREHOUSE 8v8</div>
+    <button id="introStart">▶ 시작</button>
+    <div id="introSub">클릭하면 소리와 함께 인트로가 재생됩니다</div>
+  </div>
   <button id="introSkip">건너뛰기 ▶</button>
 </div>
 
@@ -1288,7 +1296,7 @@ function sniperAssist(origin, dir) {
     const proj = to.dot(dir);
     if (proj <= 0 || proj > 1000) continue;
     const closest = origin.clone().add(dir.clone().multiplyScalar(proj));
-    const tol = Math.max(1.8, proj * 0.04);   // 가까이 1.8m, 멀수록 넓게
+    const tol = Math.max(0.7, proj * 0.012);  // 몸 폭 수준의 작은 보정(지연 대비)
     if (closest.distanceTo(c) > tol) continue;
     _ray.set(origin, dir); _ray.far = proj - 0.3;
     if (_ray.intersectObjects(world.meshes, false).length > 0) continue; // 벽 가림
@@ -2189,37 +2197,30 @@ animate();
 
 // ---------- 인트로 영상 ----------
 (function () {
+  // 브라우저는 첫 로딩 시 "소리 있는 자동재생"을 차단한다(보안 정책, 우회 불가).
+  // 그래서 시작 버튼을 한 번 누르면(사용자 동작) 그때부터 소리와 함께 끝까지 재생한다.
   const intro = document.getElementById('intro');
   if (!intro) return;
   const iv = document.getElementById('introVid');
-  const tap = document.getElementById('introTap');
-  let done = false;
+  const gate = document.getElementById('introGate');
+  let done = false, started = false;
   function endIntro() {
     if (done) return; done = true;
     try { iv.pause(); } catch (e) { }
     intro.style.opacity = '0';
     setTimeout(() => { if (intro.parentNode) intro.parentNode.removeChild(intro); }, 650);
   }
-  document.getElementById('introSkip').addEventListener('click', endIntro);
-  iv.addEventListener('ended', endIntro);   // 끝까지 본 경우에만 자동 종료(중간 컷 없음)
-  iv.addEventListener('error', endIntro);    // 영상이 없거나 오류면 곧장 메뉴로
-  // 1) 소리 포함 자동재생 시도
-  iv.muted = false;
-  const p = iv.play();
-  if (p && p.catch) p.catch(() => {
-    // 2) 브라우저가 소리 자동재생을 막으면 음소거로 처음부터 재생(끝까지) + 첫 클릭에 소리 ON
-    iv.muted = true; iv.play().catch(() => { });
-    if (tap) tap.style.display = 'block';
-  });
-  // 첫 사용자 동작에 소리만 켠다(재시작 안 함 → 중간에 끊기지 않음)
-  function unmuteOnce() {
-    if (iv.muted) { iv.muted = false; iv.play().catch(() => { }); }
-    if (tap) tap.style.display = 'none';
-    window.removeEventListener('pointerdown', unmuteOnce, true);
-    window.removeEventListener('keydown', unmuteOnce, true);
+  function startIntro() {
+    if (started || done) return; started = true;
+    gate.style.display = 'none';
+    iv.muted = false; try { iv.currentTime = 0; } catch (e) { }
+    const p = iv.play();
+    if (p && p.catch) p.catch(() => { iv.muted = true; iv.play().catch(endIntro); });
   }
-  window.addEventListener('pointerdown', unmuteOnce, true);
-  window.addEventListener('keydown', unmuteOnce, true);
+  document.getElementById('introSkip').addEventListener('click', endIntro);
+  gate.addEventListener('click', startIntro);
+  iv.addEventListener('ended', endIntro);   // 끝까지 보면 자동 종료
+  iv.addEventListener('error', endIntro);    // 영상 없으면 곧장 메뉴로
 })();
 </script>
 </body>
